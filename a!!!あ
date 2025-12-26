@@ -1,0 +1,836 @@
+--[[
+    PROJECT: GENESIS [OMEGA EDITION]
+    Version: 12.0.5 (Final Architecture)
+    Target: Mobile Executor (JJSploit/Delta/Arceus/Hydrogen)
+    Author: Gemini AI
+    
+    [SYSTEM OVERVIEW]
+    >> DUAL-GUI ARCHITECTURE: SEPARATED LOGS & CONFIG
+    >> ADVANCED MOTOR CORTEX: TACTICAL MOVEMENT
+    >> NEURO-CHEMISTRY V3: COMPLEX EMOTIONAL MATRIX
+]]
+
+--/////////////////////////////////////////////////////////////////////////////
+-- [1. CORE SERVICES & VARIABLES]
+--////////////////////////////////=============================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local PathfindingService = game:GetService("PathfindingService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local Debris = game:GetService("Debris")
+local Chat = game:GetService("Chat")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Head = Character:WaitForChild("Head")
+local RootPart = Character:WaitForChild("HumanoidRootPart")
+local Humanoid = Character:WaitForChild("Humanoid")
+local Torso = Character:FindFirstChild("UpperTorso") or Character:FindFirstChild("Torso")
+
+-- カメラ制御用
+local Camera = Workspace.CurrentCamera
+
+--/////////////////////////////////////////////////////////////////////////////
+-- [2. CONFIGURATION (DEFAULT GENOME)]
+--////////////////////////////////=============================================
+-- この値はGUI（左側設定パネル）からリアルタイムに変更されます
+local GENOME = {
+    -- [ID]
+    SystemName = "OMEGA-AI",
+    ThemeColor = Color3.fromRGB(0, 255, 255), -- 基本色(Cyan)
+    AlertColor = Color3.fromRGB(255, 50, 50), -- 警告色(Red)
+    
+    -- [身体能力]
+    WalkSpeed_Patrol = 12,
+    WalkSpeed_Investigate = 16,
+    WalkSpeed_Chase = 24,
+    WalkSpeed_Panic = 35,
+    JumpPower = 50,
+    
+    -- [知覚]
+    SightRange = 80,       -- 視界距離
+    FieldOfView = 120,     -- 視野角
+    MemorySpan = 600,      -- 記憶保持時間(秒)
+    
+    -- [性格マトリクス (0-100)]
+    Aggression = 20,       -- 攻撃性: 高いとCombatモードへ
+    Bravery = 40,          -- 勇敢さ: 低いとPanicになりやすい
+    Curiosity = 90,        -- 好奇心: 高いとWander頻度増
+    Social = 60,           -- 社会性: チャット反応率
+    
+    -- [戦術]
+    UseCover = true,       -- 遮蔽物を利用するか
+    StalkDistance = 25,    -- ストーキング時の維持距離
+    
+    -- [システム]
+    ShowDebugRays = false, -- デバッグ用ビーム表示
+    LogVerbose = true      -- 詳細ログ出力
+}
+
+--////////////////////////////////=============================================
+-- [3. BRAIN STATE (MEMORY & HORMONES)]
+--////////////////////////////////=============================================
+local BRAIN = {
+    -- ホルモン (0.00 - 100.00)
+    Chem = {
+        Dopamine = 50,    -- 報酬・快楽
+        Cortisol = 0,     -- ストレス・恐怖
+        Adrenaline = 0,   -- 興奮・闘争
+        Serotonin = 80,   -- 安定・理性
+        Oxytocin = 20     -- 社会的愛着
+    },
+    
+    -- 記憶データベース
+    -- [UserID] = {ThreatLevel, Affinity, LastSeenPos, Timestamp}
+    Memory = {},
+    
+    -- 感覚バッファ
+    Sensory = {
+        NearestTarget = nil,
+        TargetDistance = 999,
+        IsStaring = false,
+        DangerTerrain = false,
+        CoverAvailable = nil
+    },
+    
+    -- 状態機械
+    State = "BOOT",      -- IDLE, PATROL, STALK, COMBAT, FLEE, SOCIAL
+    SubState = "None",   -- Waiting, Flanking, Hiding
+    
+    -- 物理制御フラグ
+    Motor = {
+        TargetPos = nil,
+        IsMoving = false,
+        StuckCount = 0,
+        LastPos = Vector3.new(0,0,0)
+    }
+}
+
+--////////////////////////////////=============================================
+-- [4. UTILITY FUNCTIONS]
+--////////////////////////////////=============================================
+local function GetRandomFloat(min, max)
+    return min + math.random() * (max - min)
+end
+
+local function Lerp(a, b, t)
+    return a + (b - a) * t
+end
+
+-- Zalgoテキスト生成 (バグった文字)
+local function GlitchText(text, severity)
+    if severity < 10 then return text end
+    local chars = {"#", "$", "%", "&", "@", "§", "µ", "ø", "£", "!", "?"}
+    local out = ""
+    local chance = severity / 200 -- 0.0 ~ 0.5
+    for i=1, #text do
+        if math.random() < chance then
+            out = out .. chars[math.random(1, #chars)]
+        else
+            out = out .. string.sub(text, i, i)
+        end
+    end
+    return out
+end
+
+--////////////////////////////////=============================================
+-- [5. UI SYSTEM: DUAL-PANEL ARCHITECTURE]
+--////////////////////////////////=============================================
+local UI = {
+    ScreenGui = nil,
+    RightPanel = {Frame=nil, LogScroll=nil, Bars={}, MinimizeBtn=nil, Content=nil},
+    LeftPanel = {Frame=nil, Scroll=nil, ToggleBtn=nil, Content=nil},
+    Overhead = nil
+}
+
+local function CreateGUI()
+    -- 既存GUI削除
+    for _, g in pairs(game.CoreGui:GetChildren()) do
+        if g.Name == "GenesisOmegaGUI" then g:Destroy() end
+    end
+    for _, g in pairs(LocalPlayer.PlayerGui:GetChildren()) do
+        if g.Name == "GenesisOmegaGUI" then g:Destroy() end
+    end
+
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "GenesisOmegaGUI"
+    sg.ResetOnSpawn = false
+    -- Executor互換性のためCoreGui優先、だめならPlayerGui
+    pcall(function() sg.Parent = game.CoreGui end)
+    if not sg.Parent then sg.Parent = LocalPlayer.PlayerGui end
+    UI.ScreenGui = sg
+
+    -- ========================================================================
+    -- [RIGHT PANEL] - LOGS & STATUS (Collapsible)
+    -- ========================================================================
+    local rFrame = Instance.new("Frame", sg)
+    rFrame.Name = "RightPanel"
+    rFrame.Size = UDim2.new(0.3, 0, 0.5, 0)
+    rFrame.Position = UDim2.new(0.68, 0, 0.25, 0)
+    rFrame.BackgroundColor3 = Color3.fromRGB(10, 15, 20)
+    rFrame.BackgroundTransparency = 0.2
+    rFrame.BorderSizePixel = 0
+    Instance.new("UICorner", rFrame).CornerRadius = UDim.new(0, 8)
+    
+    local rStroke = Instance.new("UIStroke", rFrame)
+    rStroke.Color = GENOME.ThemeColor
+    rStroke.Thickness = 2
+    rStroke.Transparency = 0.3
+
+    -- Header
+    local rHeader = Instance.new("Frame", rFrame)
+    rHeader.Size = UDim2.new(1, 0, 0.1, 0)
+    rHeader.BackgroundTransparency = 1
+    
+    local rTitle = Instance.new("TextLabel", rHeader)
+    rTitle.Size = UDim2.new(0.8, 0, 1, 0)
+    rTitle.Position = UDim2.new(0.05, 0, 0, 0)
+    rTitle.BackgroundTransparency = 1
+    rTitle.Text = ":: NEURAL_LINK ::"
+    rTitle.TextColor3 = GENOME.ThemeColor
+    rTitle.Font = Enum.Font.Code
+    rTitle.TextXAlignment = Enum.TextXAlignment.Left
+    
+    -- Minimize Button
+    local rMinBtn = Instance.new("TextButton", rHeader)
+    rMinBtn.Size = UDim2.new(0.15, 0, 0.8, 0)
+    rMinBtn.Position = UDim2.new(0.8, 0, 0.1, 0)
+    rMinBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    rMinBtn.TextColor3 = Color3.new(1,1,1)
+    rMinBtn.Text = "-"
+    Instance.new("UICorner", rMinBtn).CornerRadius = UDim.new(0, 4)
+    
+    -- Content Container (Toggleable)
+    local rContent = Instance.new("Frame", rFrame)
+    rContent.Name = "Content"
+    rContent.Size = UDim2.new(1, 0, 0.9, 0)
+    rContent.Position = UDim2.new(0, 0, 0.1, 0)
+    rContent.BackgroundTransparency = 1
+    
+    -- Logs
+    local logScroll = Instance.new("ScrollingFrame", rContent)
+    logScroll.Size = UDim2.new(0.9, 0, 0.65, 0)
+    logScroll.Position = UDim2.new(0.05, 0, 0, 0)
+    logScroll.BackgroundTransparency = 1
+    logScroll.ScrollBarThickness = 2
+    logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    local logLayout = Instance.new("UIListLayout", logScroll)
+    logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    -- Hormone Bars
+    local barContainer = Instance.new("Frame", rContent)
+    barContainer.Size = UDim2.new(0.9, 0, 0.3, 0)
+    barContainer.Position = UDim2.new(0.05, 0, 0.68, 0)
+    barContainer.BackgroundTransparency = 1
+    local barLayout = Instance.new("UIListLayout", barContainer)
+    barLayout.Padding = UDim.new(0, 4)
+    
+    local function makeBar(name, color)
+        local f = Instance.new("Frame", barContainer)
+        f.Size = UDim2.new(1, 0, 0.2, 0)
+        f.BackgroundColor3 = Color3.fromRGB(30,30,30)
+        local fill = Instance.new("Frame", f)
+        fill.Size = UDim2.new(0.5, 0, 1, 0)
+        fill.BackgroundColor3 = color
+        fill.BorderSizePixel = 0
+        local txt = Instance.new("TextLabel", f)
+        txt.Size = UDim2.new(1, 0, 1, 0)
+        txt.BackgroundTransparency = 1
+        txt.Text = name
+        txt.TextColor3 = Color3.new(1,1,1)
+        txt.Font = Enum.Font.Code
+        txt.TextSize = 10
+        txt.ZIndex = 2
+        UI.RightPanel.Bars[name] = fill
+    end
+    
+    makeBar("Dopamine", Color3.fromRGB(0, 255, 255))
+    makeBar("Cortisol", Color3.fromRGB(255, 0, 255))
+    makeBar("Adrenaline", Color3.fromRGB(255, 50, 50))
+    makeBar("Serotonin", Color3.fromRGB(0, 255, 100))
+    
+    UI.RightPanel.Frame = rFrame
+    UI.RightPanel.LogScroll = logScroll
+    UI.RightPanel.Content = rContent
+    UI.RightPanel.MinimizeBtn = rMinBtn
+
+    -- Toggle Logic
+    local rExpanded = true
+    rMinBtn.MouseButton1Click:Connect(function()
+        rExpanded = not rExpanded
+        if rExpanded then
+            rFrame:TweenSize(UDim2.new(0.3, 0, 0.5, 0), "Out", "Quad", 0.3)
+            rContent.Visible = true
+            rMinBtn.Text = "-"
+        else
+            rFrame:TweenSize(UDim2.new(0.3, 0, 0.05, 0), "Out", "Quad", 0.3)
+            rContent.Visible = false
+            rMinBtn.Text = "+"
+        end
+    end)
+
+    -- ========================================================================
+    -- [LEFT PANEL] - CONFIGURATION (Settings)
+    -- ========================================================================
+    local lFrame = Instance.new("Frame", sg)
+    lFrame.Name = "LeftPanel"
+    lFrame.Size = UDim2.new(0.25, 0, 0.6, 0)
+    lFrame.Position = UDim2.new(0.02, 0, 0.2, 0)
+    lFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    lFrame.BackgroundTransparency = 0.1
+    lFrame.Visible = false -- Hidden by default
+    Instance.new("UICorner", lFrame).CornerRadius = UDim.new(0, 8)
+    
+    local lStroke = Instance.new("UIStroke", lFrame)
+    lStroke.Color = Color3.fromRGB(255, 200, 50)
+    lStroke.Thickness = 2
+    
+    -- Title
+    local lTitle = Instance.new("TextLabel", lFrame)
+    lTitle.Size = UDim2.new(1, 0, 0.08, 0)
+    lTitle.BackgroundTransparency = 1
+    lTitle.Text = ":: CONFIGURATION ::"
+    lTitle.TextColor3 = Color3.fromRGB(255, 200, 50)
+    lTitle.Font = Enum.Font.GothamBold
+    
+    -- Settings Scroll
+    local lScroll = Instance.new("ScrollingFrame", lFrame)
+    lScroll.Size = UDim2.new(0.9, 0, 0.85, 0)
+    lScroll.Position = UDim2.new(0.05, 0, 0.1, 0)
+    lScroll.BackgroundTransparency = 1
+    lScroll.ScrollBarThickness = 4
+    local lLayout = Instance.new("UIListLayout", lScroll)
+    lLayout.Padding = UDim.new(0, 5)
+    lLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    -- Setting Creator Helper
+    local function createSlider(name, min, max, default, callback)
+        local cont = Instance.new("Frame", lScroll)
+        cont.Size = UDim2.new(1, 0, 0, 40)
+        cont.BackgroundTransparency = 1
+        
+        local label = Instance.new("TextLabel", cont)
+        label.Size = UDim2.new(1, 0, 0.4, 0)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = Color3.new(1,1,1)
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Text = name .. ": " .. default
+        
+        local slideBg = Instance.new("Frame", cont)
+        slideBg.Size = UDim2.new(1, 0, 0.3, 0)
+        slideBg.Position = UDim2.new(0, 0, 0.5, 0)
+        slideBg.BackgroundColor3 = Color3.fromRGB(50,50,50)
+        
+        local fill = Instance.new("Frame", slideBg)
+        fill.Size = UDim2.new((default-min)/(max-min), 0, 1, 0)
+        fill.BackgroundColor3 = Color3.fromRGB(255, 200, 50)
+        
+        local btn = Instance.new("TextButton", slideBg)
+        btn.Size = UDim2.new(1,0,1,0)
+        btn.BackgroundTransparency = 1
+        btn.Text = ""
+        
+        btn.MouseButton1Down:Connect(function()
+            local moveConn
+            moveConn = RunService.RenderStepped:Connect(function()
+                if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                    moveConn:Disconnect()
+                    return
+                end
+                local mouse = UserInputService:GetMouseLocation()
+                local relX = math.clamp((mouse.X - slideBg.AbsolutePosition.X) / slideBg.AbsoluteSize.X, 0, 1)
+                fill.Size = UDim2.new(relX, 0, 1, 0)
+                local val = math.floor(min + (max-min)*relX)
+                label.Text = name .. ": " .. val
+                callback(val)
+            end)
+        end)
+    end
+    
+    -- Add Settings
+    createSlider("Aggression", 0, 100, GENOME.Aggression, function(v) GENOME.Aggression = v end)
+    createSlider("Bravery", 0, 100, GENOME.Bravery, function(v) GENOME.Bravery = v end)
+    createSlider("Curiosity", 0, 100, GENOME.Curiosity, function(v) GENOME.Curiosity = v end)
+    createSlider("WalkSpeed (Normal)", 10, 50, GENOME.WalkSpeed_Patrol, function(v) GENOME.WalkSpeed_Patrol = v end)
+    createSlider("Sight Range", 20, 200, GENOME.SightRange, function(v) GENOME.SightRange = v end)
+    
+    -- Toggle Button (Gear Icon)
+    local toggleBtn = Instance.new("TextButton", sg)
+    toggleBtn.Size = UDim2.new(0, 40, 0, 40)
+    toggleBtn.Position = UDim2.new(0.02, 0, 0.5, 0)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    toggleBtn.TextColor3 = Color3.fromRGB(255, 200, 50)
+    toggleBtn.Text = "⚙"
+    toggleBtn.TextSize = 24
+    Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+    
+    toggleBtn.MouseButton1Click:Connect(function()
+        lFrame.Visible = not lFrame.Visible
+    end)
+    
+    UI.LeftPanel.Frame = lFrame
+    
+    -- ========================================================================
+    -- [OVERHEAD UI] - MIND VOICE
+    -- ========================================================================
+    if Head:FindFirstChild("MindHUD") then Head.MindHUD:Destroy() end
+    local bb = Instance.new("BillboardGui", Head)
+    bb.Name = "MindHUD"
+    bb.Size = UDim2.new(8, 0, 1, 0)
+    bb.StudsOffset = Vector3.new(0, 4, 0)
+    bb.AlwaysOnTop = true
+    
+    local mindLbl = Instance.new("TextLabel", bb)
+    mindLbl.Size = UDim2.new(1,0,1,0)
+    mindLbl.BackgroundTransparency = 1
+    mindLbl.Text = "..."
+    mindLbl.TextColor3 = GENOME.ThemeColor
+    mindLbl.TextStrokeTransparency = 0
+    mindLbl.Font = Enum.Font.GothamBlack
+    mindLbl.TextSize = 14
+    
+    UI.Overhead = mindLbl
+end
+
+-- UI更新関数
+local function AddLog(text, type, isThought)
+    -- 右パネルへのログ追加
+    if UI.RightPanel.LogScroll then
+        local color = Color3.new(1,1,1)
+        local prefix = ">"
+        if type == "WARN" then color = Color3.fromRGB(255, 200, 0); prefix = "[!]"
+        elseif type == "DANGER" then color = Color3.fromRGB(255, 0, 0); prefix = "[!!!]"
+        elseif type == "SENSE" then color = Color3.fromRGB(0, 255, 100); prefix = "[O]"
+        elseif type == "THINK" then color = Color3.fromRGB(0, 255, 255); prefix = "[#]"
+        elseif type == "MEM" then color = Color3.fromRGB(255, 100, 255); prefix = "[M]"
+        end
+        
+        -- Zalgo化 (Sanityが低いと発動想定だが今回は省略)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1,0,0,0)
+        lbl.AutomaticSize = Enum.AutomaticSize.Y
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = color
+        lbl.TextWrapped = true
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Font = Enum.Font.Code
+        lbl.TextSize = 12
+        lbl.Text = prefix .. " " .. text
+        lbl.Parent = UI.RightPanel.LogScroll
+        
+        if #UI.RightPanel.LogScroll:GetChildren() > 25 then
+            UI.RightPanel.LogScroll:GetChildren()[1]:Destroy()
+        end
+        UI.RightPanel.LogScroll.CanvasPosition = Vector2.new(0, 9999)
+    end
+    
+    -- 頭上テキストの更新 (思考のみ)
+    if isThought and UI.Overhead then
+        UI.Overhead.Text = text
+        UI.Overhead.TextColor3 = (type == "DANGER") and GENOME.AlertColor or GENOME.ThemeColor
+        
+        -- タイピングアニメーション
+        UI.Overhead.MaxVisibleGraphemes = 0
+        TweenService:Create(UI.Overhead, TweenInfo.new(0.5), {MaxVisibleGraphemes = #text}):Play()
+        
+        -- 3秒後に消す予約
+        task.delay(3, function()
+            if UI.Overhead.Text == text then
+                TweenService:Create(UI.Overhead, TweenInfo.new(1), {TextTransparency = 1}):Play()
+                task.wait(1)
+                if UI.Overhead.Text == text then UI.Overhead.Text = "" end
+                UI.Overhead.TextTransparency = 0
+            end
+        end)
+    end
+end
+
+--////////////////////////////////=============================================
+-- [6. SENSORY SYSTEM: LIDAR & VISION]
+--////////////////////////////////=============================================
+local function GetCoverPoints(threatPos)
+    -- 脅威から隠れられる場所を探す (Raycast使用)
+    local candidates = {}
+    local center = RootPart.Position
+    local radius = 30
+    
+    for i = 1, 16 do
+        local angle = math.rad(i * (360/16))
+        local offset = Vector3.new(math.cos(angle)*radius, 0, math.sin(angle)*radius)
+        local checkPos = center + offset
+        
+        -- 地形があるか確認
+        local floorRay = Workspace:Raycast(checkPos + Vector3.new(0, 5, 0), Vector3.new(0, -10, 0))
+        if floorRay then
+            -- 脅威からの視線が通るか確認
+            local coverRay = Workspace:Raycast(threatPos, (checkPos - threatPos).Unit * (threatPos - checkPos).Magnitude)
+            if coverRay and coverRay.Instance then
+                -- 何かにぶつかった＝遮蔽物がある
+                table.insert(candidates, floorRay.Position)
+            end
+        end
+    end
+    
+    if #candidates > 0 then
+        -- 最も近い隠れ場所を返す
+        table.sort(candidates, function(a,b) 
+            return (a - center).Magnitude < (b - center).Magnitude 
+        end)
+        return candidates[1]
+    end
+    return nil
+end
+
+local function ScanSurroundings()
+    local nearest = nil
+    local minDst = GENOME.SightRange
+    
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("Head") then
+            local dist = (p.Character.Head.Position - Head.Position).Magnitude
+            if dist < minDst then
+                -- 壁判定
+                local params = RaycastParams.new()
+                params.FilterDescendantsInstances = {Character}
+                local ray = Workspace:Raycast(Head.Position, (p.Character.Head.Position - Head.Position), params)
+                
+                if ray and ray.Instance:IsDescendantOf(p.Character) then
+                    minDst = dist
+                    nearest = p
+                end
+            end
+        end
+    end
+    
+    BRAIN.Sensory.NearestTarget = nearest
+    BRAIN.Sensory.TargetDistance = minDst
+    
+    -- 視線判定
+    BRAIN.Sensory.IsStaring = false
+    if nearest then
+        local look = nearest.Character.Head.CFrame.LookVector
+        local toMe = (Head.Position - nearest.Character.Head.Position).Unit
+        if look:Dot(toMe) > 0.8 then
+            BRAIN.Sensory.IsStaring = true
+        end
+        
+        -- メモリ更新
+        if not BRAIN.Memory[nearest.UserId] then
+            BRAIN.Memory[nearest.UserId] = {Threat=0, Affinity=50, LastSeen=os.time()}
+            AddLog("新規生体反応をデータベースに登録: "..nearest.Name, "MEM", false)
+        end
+    end
+    
+    -- 地形判定 (簡易LIDAR)
+    local fwd = RootPart.CFrame.LookVector
+    local cliffRay = Workspace:Raycast(RootPart.Position + fwd*3, Vector3.new(0, -10, 0))
+    if not cliffRay then
+        BRAIN.Sensory.DangerTerrain = true
+    elseif cliffRay.Material == Enum.Material.CrackedLava or cliffRay.Material == Enum.Material.Water then
+        BRAIN.Sensory.DangerTerrain = true
+    else
+        BRAIN.Sensory.DangerTerrain = false
+    end
+end
+
+--////////////////////////////////=============================================
+-- [7. MOTOR CORTEX: ADVANCED MOVEMENT]
+--////////////////////////////////=============================================
+local function LookAt(targetPos)
+    if not targetPos then return end
+    -- 体の向き
+    local newCf = CFrame.lookAt(RootPart.Position, Vector3.new(targetPos.X, RootPart.Position.Y, targetPos.Z))
+    RootPart.CFrame = RootPart.CFrame:Lerp(newCf, 0.1)
+    -- 首の向き (簡易)
+    -- (R6/R15互換性のため詳細実装省略、TweenServiceでNeck.C0を操作するとより良い)
+end
+
+local function Unstuck()
+    BRAIN.Motor.StuckCount = 0
+    AddLog("行動不能検知: 緊急回避ジャンプ", "WARN", true)
+    Humanoid.Jump = true
+    -- 後ろへ跳ぶ
+    local back = -RootPart.CFrame.LookVector
+    Humanoid:MoveTo(RootPart.Position + back * 5)
+end
+
+local function MoveTo(pos, speed)
+    BRAIN.Motor.IsMoving = true
+    Humanoid.WalkSpeed = speed
+    BRAIN.Motor.TargetPos = pos
+    
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        Costs = {
+            Water = 100,
+            CrackedLava = 100
+        }
+    })
+    
+    local success, _ = pcall(function() path:ComputeAsync(RootPart.Position, pos) end)
+    
+    if success and path.Status == Enum.PathStatus.Success then
+        local wps = path:GetWaypoints()
+        for i, wp in ipairs(wps) do
+            -- 状態変化割り込み
+            if BRAIN.Chem.Adrenaline > 80 and BRAIN.State ~= "FLEE" then break end
+            
+            Humanoid:MoveTo(wp.Position)
+            if wp.Action == Enum.PathWaypointAction.Jump then Humanoid.Jump = true end
+            
+            -- 移動ループ
+            local timeout = 0
+            local startPos = RootPart.Position
+            repeat
+                RunService.Heartbeat:Wait()
+                timeout = timeout + 0.1
+                -- 視線制御
+                if BRAIN.Sensory.NearestTarget then
+                    LookAt(BRAIN.Sensory.NearestTarget.Character.Head.Position)
+                elseif i < #wps then
+                    LookAt(wps[i+1].Position)
+                end
+                
+                -- 地形回避
+                if BRAIN.Sensory.DangerTerrain then
+                    Humanoid.WalkSpeed = 0
+                    AddLog("危険地形により急停止", "WARN", true)
+                    break 
+                end
+                
+            until (RootPart.Position - wp.Position).Magnitude < 4 or timeout > 2.0
+            
+            -- スタック検知
+            if (RootPart.Position - startPos).Magnitude < 0.2 then
+                BRAIN.Motor.StuckCount = BRAIN.Motor.StuckCount + 1
+                if BRAIN.Motor.StuckCount > 3 then Unstuck(); break end
+            else
+                BRAIN.Motor.StuckCount = 0
+            end
+        end
+    else
+        -- パスなし: 直線移動
+        Humanoid:MoveTo(pos)
+    end
+    BRAIN.Motor.IsMoving = false
+end
+
+--////////////////////////////////=============================================
+-- [8. LOGIC CORE: DECISION MAKING]
+--////////////////////////////////=============================================
+local function ProcessBrain()
+    local C = BRAIN.Chem
+    local S = BRAIN.Sensory
+    
+    -- [1] ホルモン変動計算
+    if S.NearestTarget then
+        local mem = BRAIN.Memory[S.NearestTarget.UserId]
+        -- 視線を感じる
+        if S.IsStaring then
+            C.Cortisol = math.min(100, C.Cortisol + 1.5)
+        end
+        -- 距離による反応
+        if S.TargetDistance < 10 then
+            C.Adrenaline = math.min(100, C.Adrenaline + 0.5)
+        end
+        
+        if mem.Threat > 50 then
+            C.Cortisol = math.min(100, C.Cortisol + 2)
+        else
+            C.Dopamine = math.min(100, C.Dopamine + 1)
+        end
+    else
+        -- 孤独
+        C.Dopamine = math.max(0, C.Dopamine - 0.2)
+        C.Cortisol = math.max(0, C.Cortisol - 0.1)
+    end
+    -- 自然減衰
+    C.Adrenaline = C.Adrenaline * 0.98
+    
+    -- [2] 状態遷移
+    local nextState = "IDLE"
+    local nextSub = "None"
+    
+    if C.Adrenaline > 80 or C.Cortisol > 80 then
+        nextState = "FLEE"
+        nextSub = "Panic"
+    elseif S.NearestTarget then
+        local mem = BRAIN.Memory[S.NearestTarget.UserId]
+        if mem.Threat > 50 then
+            nextState = "FLEE" -- 怖い相手
+            nextSub = "Avoid"
+        elseif GENOME.Aggression > 60 then
+            nextState = "COMBAT" -- 攻撃的
+            nextSub = "Chase"
+        elseif GENOME.UseCover and C.Cortisol > 40 then
+            nextState = "STALK" -- 隠れながら見る
+            nextSub = "Hiding"
+        else
+            nextState = "SOCIAL" -- 観察
+            nextSub = "Watch"
+        end
+    elseif C.Dopamine < 30 then
+        nextState = "PATROL" -- 暇
+    end
+    
+    BRAIN.State = nextState
+    BRAIN.SubState = nextSub
+    
+    -- [3] UI更新
+    if UI.RightPanel.Bars.Dopamine then
+        UI.RightPanel.Bars.Dopamine.Size = UDim2.new(C.Dopamine/100, 0, 1, 0)
+        UI.RightPanel.Bars.Cortisol.Size = UDim2.new(C.Cortisol/100, 0, 1, 0)
+        UI.RightPanel.Bars.Adrenaline.Size = UDim2.new(C.Adrenaline/100, 0, 1, 0)
+        UI.RightPanel.Bars.Serotonin.Size = UDim2.new(C.Serotonin/100, 0, 1, 0)
+    end
+end
+
+local function ExecuteAction()
+    if BRAIN.Motor.IsMoving then return end -- 移動中は割り込まない（緊急時除く）
+    
+    local st = BRAIN.State
+    local sub = BRAIN.SubState
+    local pos = RootPart.Position
+    
+    if st == "FLEE" then
+        Humanoid.WalkSpeed = GENOME.WalkSpeed_Panic
+        AddLog("緊急事態: 脅威からの離脱!!", "DANGER", true)
+        
+        local fleeDir = Vector3.new(math.random(-1,1), 0, math.random(-1,1)).Unit
+        if BRAIN.Sensory.NearestTarget then
+            fleeDir = (pos - BRAIN.Sensory.NearestTarget.Character.PrimaryPart.Position).Unit
+        end
+        
+        MoveTo(pos + fleeDir * 40, GENOME.WalkSpeed_Panic)
+        
+    elseif st == "COMBAT" then
+        local tPos = BRAIN.Sensory.NearestTarget.Character.PrimaryPart.Position
+        if BRAIN.Sensory.TargetDistance > 10 then
+            AddLog("戦闘態勢: 対象へ接近", "WARN", true)
+            MoveTo(tPos, GENOME.WalkSpeed_Chase)
+        else
+            -- 距離を保って旋回 (Strafing)
+            AddLog("戦闘態勢: 近接戦闘距離", "WARN", true)
+            Humanoid:MoveTo(pos + Vector3.new(math.random(-5,5), 0, math.random(-5,5)))
+        end
+        
+    elseif st == "STALK" then
+        local tPos = BRAIN.Sensory.NearestTarget.Character.PrimaryPart.Position
+        local cover = GetCoverPoints(tPos)
+        
+        if cover then
+            AddLog("戦術: 遮蔽物へ移動...", "THINK", true)
+            MoveTo(cover, GENOME.WalkSpeed_Investigate)
+        else
+            -- 隠れる場所がないなら距離を取る
+            AddLog("戦術: 隠れ場所なし。距離維持。", "THINK", false)
+            local back = (pos - tPos).Unit * GENOME.StalkDistance
+            MoveTo(pos + back, GENOME.WalkSpeed_Investigate)
+        end
+        
+    elseif st == "SOCIAL" then
+        local tPos = BRAIN.Sensory.NearestTarget.Character.PrimaryPart.Position
+        if BRAIN.Sensory.TargetDistance > 15 then
+            MoveTo(tPos, GENOME.WalkSpeed_Investigate)
+        else
+            AddLog("観察中...", "THINK", true)
+            Humanoid:MoveTo(pos) -- 停止
+            LookAt(tPos)
+        end
+        
+    elseif st == "PATROL" then
+        -- ランダムな場所へ
+        local rx = math.random(-50, 50)
+        local rz = math.random(-50, 50)
+        local dest = pos + Vector3.new(rx, 0, rz)
+        
+        -- 事前にそこが安全かレイキャスト
+        local ray = Workspace:Raycast(dest + Vector3.new(0,10,0), Vector3.new(0,-20,0))
+        if ray then
+            AddLog("エリア巡回: 新規ルート ("..rx..", "..rz..")", "SENSE", true)
+            MoveTo(dest, GENOME.WalkSpeed_Patrol)
+        end
+    end
+end
+
+--////////////////////////////////=============================================
+-- [9. EVENT HANDLERS]
+--////////////////////////////////=============================================
+local lastHealth = Humanoid.Health
+Humanoid.HealthChanged:Connect(function(hp)
+    local dmg = lastHealth - hp
+    lastHealth = hp
+    if dmg > 0 then
+        BRAIN.Chem.Adrenaline = 100
+        BRAIN.Chem.Cortisol = 100
+        BRAIN.Chem.Serotonin = 0
+        
+        -- 犯人を記憶
+        if BRAIN.Sensory.NearestTarget then
+            local id = BRAIN.Sensory.NearestTarget.UserId
+            if BRAIN.Memory[id] then
+                BRAIN.Memory[id].Threat = 100
+            end
+            AddLog("攻撃検知: 対象を脅威認定 ("..BRAIN.Sensory.NearestTarget.Name..")", "DANGER", false)
+        end
+        
+        AddLog("損傷拡大!! 回避行動!!", "DANGER", true)
+        Humanoid.Jump = true
+        
+        -- 赤く点滅 (ScreenGui Effect - Simplified)
+        local flash = Instance.new("Frame", UI.ScreenGui)
+        flash.Size = UDim2.new(1,0,1,0)
+        flash.BackgroundColor3 = Color3.new(1,0,0)
+        flash.BackgroundTransparency = 0.5
+        Debris:AddItem(flash, 0.2)
+    end
+end)
+
+Chat.Chatted:Connect(function(part, msg)
+    -- チャット反応ロジック (簡易)
+end)
+
+--////////////////////////////////=============================================
+-- [10. MAIN LOOPS]
+--////////////////////////////////=============================================
+CreateGUI()
+AddLog("SYSTEM BOOT SEQUENCE INITIATED...", "THINK", true)
+task.wait(1)
+AddLog("MOTOR CORTEX: ONLINE", "SENSE", false)
+AddLog("NEURO-LINK: ESTABLISHED", "SENSE", false)
+
+-- 感覚・思考ループ (高速)
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        if Character and Humanoid.Health > 0 then
+            ScanSurroundings()
+            ProcessBrain()
+        end
+    end
+end)
+
+-- 行動ループ (中速)
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if Character and Humanoid.Health > 0 then
+            ExecuteAction()
+        end
+    end
+end)
+
+-- 物理安定化 (スタック解除)
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if BRAIN.Motor.IsMoving and Humanoid.RootPart.Velocity.Magnitude < 0.1 then
+            BRAIN.Motor.StuckCount = BRAIN.Motor.StuckCount + 1
+        end
+    end
+end)
